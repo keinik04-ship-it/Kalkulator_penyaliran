@@ -17,7 +17,7 @@ def hitung_volume_miring(luas_alas, h, sudut_derajat=60):
     x = h / math.tan(sudut_rad)
     s_atas = s_bawah + (2 * x)
     luas_atas = s_atas ** 2
-    volume = (h / 3) * (luas_alas + luas_atas + math.sqrt(luas_alas * luas_alas))
+    volume = (h / 3) * (luas_alas + luas_atas + math.sqrt(luas_alas * luas_atas))
     return volume, s_atas
 
 def run_streamlit_app():
@@ -35,7 +35,7 @@ def run_streamlit_app():
         length_m = st.number_input("Length of Divide (L) meter", value=1300.0)
         tr_effective = st.number_input("Duration of Effective Rainfall (tr) jam", value=2.0, step=0.1)
         intensitas = 25.04  
-        durasi_simulasi = st.slider("Durasi Simulasi Grafik (Jam)", 1, 48, 24)
+        durasi_simulasi = st.slider("Durasi Simulasi Grafik (Jam)", 1, 6, 6)
         
         # --- PERHITUNGAN KIRPICH ---
         tc_menit = (0.01947 * (length_m**0.77)) / (slope**0.385)
@@ -76,49 +76,54 @@ def run_streamlit_app():
     for i in range(len(time_ratios)):
         tr = time_ratios[i]
         dr = discharge_ratios[i]
-        
         t_jam = (tr * Tp_peak) + tc_jam
         t_sec = t_jam * 3600
         debit_q = Qp * dr
         debit_t10 = debit_q * 25.04 / 10
-        
-        data_list.append({
-            "Time Ratio": tr,
-            "Discharge Ratio": dr,
-            "Time (t) jam": t_jam,
-            "Time (s)": t_sec,
-            "Debit (q)": debit_q,
-            "Debit (T=10)": debit_t10
-        })
+        data_list.append({"Time Ratio": tr, "Discharge Ratio": dr, "Time (t) jam": t_jam, "Time (s)": t_sec, "Debit (q)": debit_q, "Debit (T=10)": debit_t10})
 
     df_full = pd.DataFrame(data_list)
     
-    # --- PERHITUNGAN VOLUME (n ke n+1) ---
     vols = []
     for i in range(len(df_full)):
         if i < len(df_full) - 1:
-            vol_step = (df_full.loc[i+1, "Time (s)"] - df_full.loc[i, "Time (s)"]) * \
-                       (df_full.loc[i, "Debit (T=10)"] + df_full.loc[i+1, "Debit (T=10)"]) / 2
+            vol_step = (df_full.loc[i+1, "Time (s)"] - df_full.loc[i, "Time (s)"]) * (df_full.loc[i, "Debit (T=10)"] + df_full.loc[i+1, "Debit (T=10)"]) / 2
             vols.append(vol_step)
         else:
             vols.append(0.0)
     
     df_full["Volume"] = vols
     df_full["Akumulasi Volume"] = df_full["Volume"].cumsum()
-
-    # --- DEBIT MAX DARI TABEL ---
     debit_max_t10 = df_full["Debit (T=10)"].max()
-
     df_plot = df_full[df_full["Time (t) jam"] <= durasi_simulasi]
     total_vol_limpasan = df_full["Akumulasi Volume"].iloc[-1]
 
-    # --- PERHITUNGAN FISIK ---
+    # --- TAMBAHAN INPUT TSS ---
+    with st.sidebar.expander("Kualitas Air (terdapat pada perhitungan TSS )", expanded=True):
+        tss_input = st.number_input("Masukan Nilai TSS (mg/L)", value=1500.0, step=10.0)
+
+    # --- PERHITUNGAN FISIK (LOGIKA LUAS DIUBAH) ---
+    residu_terlarut = debit_puncak * 1.5 * tss_input
+    volume_padatan = residu_terlarut / massa_jenis_g if massa_jenis_g > 0 else 0
+    
     ps_kg = massa_jenis_g / 1000
     v_stokes = (9.8 * ((d_mm/1000)**2) * (ps_kg - pa)) / (18 * miu) if miu > 0 else 0
     luas_total_butuh = (Qp * 1.5) / v_stokes if v_stokes > 0 else 0
+    
+    # 1. Luas Unit 1 (Primary) = 1/3 dari Luas Total
     luas_u1 = luas_total_butuh / 3
     vol_u1, sa1 = hitung_volume_miring(luas_u1, kedalaman, kemiringan)
-    kapasitas_sistem = vol_u1 * jumlah_kolam
+    
+    # 2. Luas Unit Selanjutnya (Secondary) = 2/3 Luas Total dibagi sisa kolam
+    if jumlah_kolam > 1:
+        luas_secondary = (2/3 * luas_total_butuh) / (jumlah_kolam - 1)
+    else:
+        luas_secondary = 0
+        
+    vol_sec, sa_sec = hitung_volume_miring(luas_secondary, kedalaman, kemiringan) if luas_secondary > 0 else (0, 0)
+    
+    # Kapasitas Sistem: Unit 1 + (Unit Secondary * Sisa Kolam)
+    kapasitas_sistem = vol_u1 + (vol_sec * (jumlah_kolam - 1))
 
     # --- DASHBOARD ---
     st.subheader("Perhitungan Hidrologi")
@@ -134,7 +139,6 @@ def run_streamlit_app():
     spreadsheet_url = "https://docs.google.com/spreadsheets/d/1fdBN-JkzGABXV7f0EB6UMblUjvyZEUi58l1lVkEuqhk/edit?gid=207338239&pli=1&authuser=0#gid=207338239"
     st.link_button("📂 Perhitungan TSS", spreadsheet_url, use_container_width=True, type="primary")
 
-
     col7, col8, col9, col10 = st.columns(4)
     col7.metric("Peak Time (TP)", f"{Tp_peak:.3f} Jam")
     col8.metric("Time of Conc. (TC)", f"{tc_menit:.2f} Min")
@@ -142,7 +146,6 @@ def run_streamlit_app():
     col10.metric("Luas Catchment", f"{area_ha} Ha")
 
     st.markdown("---")
-    
     col_left, col_right = st.columns(2)
     with col_left:
         st.subheader("📈 Hidrograf Aliran (SCS-Kirpich)")
@@ -164,8 +167,23 @@ def run_streamlit_app():
             st.write(f"**Sisi Bawah:** {math.sqrt(luas_u1):.2f} m")
             st.write(f"**Sisi Atas:** {sa1:.2f} m")
             st.write(f"**Luas Alas:** {luas_u1:.2f} m²")
+            st.write(f"**Residu Terlarut:** {residu_terlarut:.2f} mg/s")
         with col_b:
             st.success(f"**Volume Kolam:** {vol_u1:.2f} m³")
+
+    with tab2:
+        if jumlah_kolam > 1:
+            col_c, col_d = st.columns(2)
+            with col_c:
+                st.write(f"**Sisi Bawah per Unit:** {math.sqrt(luas_secondary):.2f} m")
+                st.write(f"**Sisi Atas per Unit:** {sa_sec:.2f} m")
+                st.write(f"**Luas Alas per Unit:** {luas_secondary:.2f} m²")
+                st.write(f"**Total Luas Secondary (2/3):** {2/3 * luas_total_butuh:.2f} m²")
+            with col_d:
+                st.info(f"**Volume per Unit Secondary:** {vol_sec:.2f} m³")
+                st.write(f"**Total Unit Secondary:** {jumlah_kolam - 1} Kolam")
+        else:
+            st.warning("Tambahkan 'Total Jumlah Kolam' di sidebar untuk mengaktifkan unit secondary.")
 
     st.caption("Volume: integrasi maju (n ke n+1). Qp: 2.08 * A / Tp. Debit Puncak: 0.00278 * C * I * A.")
 
